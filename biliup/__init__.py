@@ -1,29 +1,45 @@
-import asyncio
+import logging
+import sys
 
-from .common.reload import AutoReload
-from .common.timer import Timer
+__version__ = "0.3.8"
 
-from .engine.event import Event
-from .engine import config
-
-__version__ = "0.1.8"
-
-
-async def main():
-    from .handler import CHECK_UPLOAD, CHECK, event_manager
-
-    event_manager.start()
-
-    async def check_timer():
-        event_manager.send_event(Event(CHECK_UPLOAD))
-        for k in event_manager.context['checker'].keys():
-            event_manager.send_event(Event(CHECK, (k,)))
-
-    wait = config.get('event_loop_interval') if config.get('event_loop_interval') else 40
-    # 初始化定时器
-    timer = Timer(func=check_timer, interval=wait)
-
-    interval = config.get('check_sourcecode') if config.get('check_sourcecode') else 15
-    # 模块更新自动重启
-    detector = AutoReload(event_manager, timer, interval=interval)
-    await asyncio.gather(detector.astart(), timer.astart(), return_exceptions=True)
+LOG_CONF = {
+    'version': 1,
+    'formatters': {
+        'verbose': {
+            'format': "%(asctime)s %(filename)s[line:%(lineno)d](Pid:%(process)d "
+                      "Tname:%(threadName)s) %(levelname)s %(message)s",
+            # 'datefmt': "%Y-%m-%d %H:%M:%S"
+        },
+        'simple': {
+            'format': '%(filename)s%(lineno)d[%(levelname)s]Tname:%(threadName)s %(message)s'
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': logging.DEBUG,
+            'class': 'logging.StreamHandler',
+            'stream': sys.stdout,
+            'formatter': 'simple'
+        },
+        'file': {
+            'level': logging.DEBUG,
+            'class': 'biliup.common.log.SafeRotatingFileHandler',
+            'when': 'W0',
+            'interval': 1,
+            'backupCount': 1,
+            'filename': 'ds_update.log',
+            'formatter': 'verbose'
+        }
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': logging.INFO,
+    },
+    'loggers': {
+        'biliup': {
+            'handlers': ['file'],
+            'level': logging.INFO,
+        },
+    }
+}

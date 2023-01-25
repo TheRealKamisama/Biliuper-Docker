@@ -1,7 +1,7 @@
 # encoding: UTF-8
 # 系统模块
 import inspect
-from collections import Generator
+from collections.abc import Generator
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from queue import Queue
@@ -21,9 +21,10 @@ class EventManager(Thread):
         # 事件管理器开关
         self.__active = True
         # 事件处理线程池1
-        self._pool1 = ThreadPoolExecutor(pool1_size, thread_name_prefix='Asynchronous1')
-        # 事件处理线程池2
-        self._pool2 = ThreadPoolExecutor(pool2_size, thread_name_prefix='Asynchronous2')
+        self._pool = {
+            'Asynchronous1': ThreadPoolExecutor(pool1_size, thread_name_prefix='Asynchronous1'),
+            'Asynchronous2': ThreadPoolExecutor(pool2_size, thread_name_prefix='Asynchronous2')
+        }
         # 阻塞函数列表
         self.__block = []
 
@@ -47,10 +48,7 @@ class EventManager(Thread):
         # 若存在，则按顺序将事件传递给处理函数执行
         for handler in self.__handlers[event.type_]:
             if handler.__qualname__ in self.__block:
-                if event.type_ == 'download':
-                    self._pool1.submit(handler, event)
-                else:
-                    self._pool2.submit(handler, event)
+                self._pool.get(handler.pool).submit(handler, event)
             else:
                 handler(event)
 
@@ -59,8 +57,8 @@ class EventManager(Thread):
         # 将事件管理器设为停止
         self.__active = False
         self.__eventQueue.put(None)
-        self._pool1.shutdown()
-        self._pool2.shutdown()
+        for pool in self._pool.values():
+            pool.shutdown()
 
     def add_event_listener(self, type_, handler):
         """绑定事件和监听器处理函数"""
@@ -122,7 +120,7 @@ class EventManager(Thread):
                     return _event
 
                 self.add_event_listener(type_, wrapper)
-
+                wrapper.pool = block
                 return wrapper
         else:
             def decorator(func):
@@ -137,6 +135,7 @@ class EventManager(Thread):
                     callback(_event)
                     return _event
 
+                wrapper.pool = block
                 return wrapper
         return decorator
 
@@ -147,6 +146,7 @@ class EventManager(Thread):
             for k in sig.parameters:
                 kwargs[k] = self.context[k]
             instance = cls(**kwargs)
+            self.context[cls.__name__] = instance
             for type_ in self.__method:
                 for handler in self.__method[type_]:
                     self.add_event_listener(type_, getattr(instance, handler))

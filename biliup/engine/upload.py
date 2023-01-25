@@ -1,6 +1,8 @@
 import logging
 import os
+import shutil
 import subprocess
+from functools import reduce
 from pathlib import Path
 
 logger = logging.getLogger('biliup')
@@ -18,7 +20,7 @@ class UploadBase:
     def file_list(index):
         file_list = []
         for file_name in os.listdir('.'):
-            if index in file_name:
+            if index in file_name and os.path.isfile(file_name):
                 file_list.append(file_name)
         file_list = sorted(file_list)
         return file_list
@@ -29,14 +31,14 @@ class UploadBase:
             os.remove(r)
             logger.info('删除-' + r)
 
-    @staticmethod
-    def filter_file(index):
+    def filter_file(self, index):
         file_list = UploadBase.file_list(index)
         if len(file_list) == 0:
             return False
         for r in file_list:
-            file_size = os.path.getsize(r) / 1024 / 1024 / 1024
-            if file_size <= 0.02:
+            file_size = os.path.getsize(r) / 1024 / 1024
+            threshold = self.data.get('threshold') if self.data.get('threshold') else 2
+            if file_size <= threshold:
                 os.remove(r)
                 logger.info('过滤删除-' + r)
         file_list = UploadBase.file_list(index)
@@ -45,7 +47,7 @@ class UploadBase:
             return False
         for f in file_list:
             if f.endswith('.part'):
-                os.rename(f, os.path.splitext(f)[0])
+                shutil.move(f, os.path.splitext(f)[0])
                 logger.info('%s存在已更名' % f)
         return True
 
@@ -73,10 +75,14 @@ class UploadBase:
                     dest = Path(post_processor['mv'])
                     if not dest.is_dir():
                         dest.mkdir(parents=True, exist_ok=True)
-                    path.rename(dest / path.name)
+                    #path.rename(dest / path.name)
+                    shutil.move(path, dest / path.name)
                     logger.info(f"move to {(dest / path.name).absolute()}")
             if post_processor.get('run'):
                 process = subprocess.run(
-                    post_processor['run'], shell=True, input=str(Path('\n'.join(data)).absolute()),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+                    post_processor['run'], shell=True, input=reduce(lambda x, y: x + str(Path(y).absolute()) + '\n', data, ''),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if process.returncode != 0:
+                    logger.error(process.stdout)
+                    raise Exception("PostProcessorRunTimeError")
                 logger.info(process.stdout.rstrip())

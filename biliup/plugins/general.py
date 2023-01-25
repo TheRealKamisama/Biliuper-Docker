@@ -1,8 +1,6 @@
 from threading import Event
-
-import streamlink
-import youtube_dl
 from ykdl.common import url_to_module
+import yt_dlp
 
 from ..engine.download import DownloadBase
 from . import logger
@@ -17,13 +15,13 @@ class YDownload(DownloadBase):
         try:
             self.get_sinfo()
             return True
-        except youtube_dl.utils.DownloadError:
+        except yt_dlp.utils.DownloadError:
             logger.debug('%s未开播或读取下载信息失败' % self.fname)
             return False
 
     def get_sinfo(self):
         info_list = []
-        with youtube_dl.YoutubeDL() as ydl:
+        with yt_dlp.YoutubeDL() as ydl:
             if self.url:
                 info = ydl.extract_info(self.url, download=False)
             else:
@@ -37,9 +35,9 @@ class YDownload(DownloadBase):
     def download(self, filename):
         try:
             self.ydl_opts = {'outtmpl': filename}
-            with youtube_dl.YoutubeDL(self.ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 ydl.download([self.url])
-        except youtube_dl.utils.DownloadError:
+        except yt_dlp.utils.DownloadError:
             return 1
         return 0
 
@@ -52,6 +50,7 @@ class SDownload(DownloadBase):
 
     def check_stream(self):
         logger.debug(self.fname)
+        import streamlink
         try:
             streams = streamlink.streams(self.url)
             if streams:

@@ -1,15 +1,14 @@
 import random
 import subprocess
 import time
-from urllib.parse import urlencode
 
 import requests
-import youtube_dl
+import yt_dlp
 
-from ..engine.decorators import Plugin
-from ..plugins import BatchCheckBase, match1
-from ..engine.download import DownloadBase
 from . import logger
+from ..engine.decorators import Plugin
+from ..engine.download import DownloadBase
+from ..plugins import BatchCheckBase
 
 VALID_URL_BASE = r'(?:https?://)?(?:(?:www|go|m)\.)?twitch\.tv/(?P<id>[0-9_a-zA-Z]+)'
 _OPERATION_HASHES = {
@@ -30,12 +29,13 @@ class TwitchVideos(DownloadBase):
         DownloadBase.__init__(self, fname, url, suffix=suffix)
 
     def check_stream(self):
-        with youtube_dl.YoutubeDL({'download_archive': 'archive.txt'}) as ydl:
+        with yt_dlp.YoutubeDL({'download_archive': 'archive.txt'}) as ydl:
             info = ydl.extract_info(self.url, download=False)
             for entry in info['entries']:
                 if ydl.in_download_archive(entry):
                     continue
                 self.raw_stream_url = entry['url']
+                self.room_title = entry.get('title')
                 ydl.record_download_archive(entry)
                 return True
 
@@ -44,15 +44,15 @@ class TwitchVideos(DownloadBase):
             BatchCheckBase.__init__(self, pattern_id=VALID_URL_BASE, urls=urls)
 
         def check(self):
-            with youtube_dl.YoutubeDL({'download_archive': 'archive.txt'}) as ydl:
+            with yt_dlp.YoutubeDL({'download_archive': 'archive.txt'}) as ydl:
                 for channel_name, url in self.not_live():
-                    info = ydl.extract_info(url, download=False)
+                    info = ydl.extract_info(url, download=False, process=False)
                     for entry in info['entries']:
                         if ydl.in_download_archive(entry):
                             continue
                         yield url
                     time.sleep(10)
-                        # ydl.record_download_archive(entry)
+                    # ydl.record_download_archive(entry)
 
         def not_live(self):
             gql = self.get_streamer()
@@ -85,29 +85,48 @@ class TwitchVideos(DownloadBase):
 class Twitch(DownloadBase):
     def __init__(self, fname, url, suffix='flv'):
         DownloadBase.__init__(self, fname, url, suffix=suffix)
+        self.proc = None
 
     def check_stream(self):
         if not list(Twitch.BatchCheck([self.url]).check()):
             return
-        port = random.randint(1025, 65535)
-        proc = subprocess.Popen(["streamlink", "--player-external-http",
-                                 "--player-external-http-port", str(port), self.url, "best"])
-        self.raw_stream_url = f"http://localhost:{port}"
-        i = 0
-        while i < 5:
-            if not (proc.poll() is None):
+        gql = Twitch.BatchCheck([self.url]).get_streamer()
+        for data in gql:
+            self.room_title = data.get('data').get('user').get('lastBroadcast').get('title')
+        if self.downloader == 'ffmpeg':
+            port = random.randint(1025, 65535)
+            stream_shell = [
+                "streamlink", "--player-external-http", "--twitch-disable-ads",
+                "--twitch-disable-hosting", "--twitch-disable-reruns",
+                "--player-external-http-port", str(port), self.url, "best"
+            ]
+            if config.get('twitch_cookie'): 
+                twitch_cookie = "--twitch-api-header=Authorization=OAuth " + config.get('twitch_cookie')
+                stream_shell.insert(1, twitch_cookie)
+            self.proc = subprocess.Popen(stream_shell)
+            self.raw_stream_url = f"http://localhost:{port}"
+            i = 0
+            while i < 5:
+                if not (self.proc.poll() is None):
+                    return
+                time.sleep(1)
+                i += 1
+            return True
+        with yt_dlp.YoutubeDL() as ydl:
+            try:
+                info = ydl.extract_info(self.url, download=False)
+            except yt_dlp.utils.DownloadError as e:
+                logger.warning(self.url, exc_info=e)
                 return
-            time.sleep(1)
-            i += 1
-        return True
-        # with youtube_dl.YoutubeDL() as ydl:
-        #     try:
-        #         info = ydl.extract_info(self.url, download=False)
-        #     except youtube_dl.utils.DownloadError as e:
-        #         logger.warning(self.url, exc_info=e)
-        #         return
-        #     self.raw_stream_url = info['formats'][-1]['url']
-        #     return True
+            self.raw_stream_url = info['formats'][-1]['url']
+            return True
+
+    def close(self):
+        try:
+            if self.proc is not None:
+                self.proc.terminate()
+        except:
+            logger.exception(f'terminate {self.fname} failed')
 
     class BatchCheck(BatchCheckBase):
         def __init__(self, urls):

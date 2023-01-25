@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import time
+import urllib.parse
 from dataclasses import asdict, dataclass, field, InitVar
 from json import JSONDecodeError
 from os.path import splitext, basename
@@ -16,20 +17,23 @@ from urllib.parse import quote
 import aiohttp
 import requests.utils
 import rsa
+import xml.etree.ElementTree as ET
 from requests.adapters import HTTPAdapter, Retry
 
-from biliup import config
+from biliup.config import config
 from ..engine import Plugin
 from ..engine.upload import UploadBase, logger
 
 
 @Plugin.upload(platform="bili_web")
 class BiliWeb(UploadBase):
-    def __init__(self, principal, data, user, submit_api=None, copyright=2, postprocessor=None,
-                 lines='AUTO', threads=3, tid=122, tags=None, cover_path=None, description=''):
+    def __init__(
+            self, principal, data, user, submit_api=None, copyright=2, postprocessor=None, dtime=None,
+            dynamic='', lines='AUTO', threads=3, tid=122, tags=None, cover_path=None, description=''
+    ):
         super().__init__(principal, data, persistence_path='bili.cookie', postprocessor=postprocessor)
         if tags is None:
-            tags = ['星际争霸2', '电子竞技']
+            tags = []
         self.user = user
         self.lines = lines
         self.submit_api = submit_api
@@ -38,27 +42,31 @@ class BiliWeb(UploadBase):
         self.tags = tags
         self.cover_path = cover_path
         self.desc = description
+        self.dynamic = dynamic
         self.copyright = copyright
+        self.dtime = dtime
 
     def upload(self, file_list):
         video = Data()
+        video.dynamic = self.dynamic
         with BiliBili(video) as bili:
             bili.app_key = self.user.get('app_key')
             bili.appsec = self.user.get('appsec')
             bili.login(self.persistence_path, self.user)
             for file in file_list:
                 video_part = bili.upload_file(file, self.lines, self.threads)  # 上传视频
+                video_part['title'] = video_part['title'][:80]
                 video.append(video_part)  # 添加已经上传的视频
-            video.title = self.data["format_title"]
-            video.desc = self.desc + '''
-            Powered By biliup
-            Github：https://github.com/ForgQi/biliup (或者在Github搜索ForgQi)交流群：837362626'''
+            video.title = self.data["format_title"][:80]  # 稿件标题限制80字
+            video.desc = self.desc
             video.copyright = self.copyright
             if self.copyright == 2:
                 video.source = self.data["url"]  # 添加转载地址说明
             # 设置视频分区,默认为174 生活，其他分区
             video.tid = self.tid
             video.set_tag(self.tags)
+            if self.dtime:
+                video.delay_time(int(time.time()) + self.dtime)
             if self.cover_path:
                 video.cover = bili.cover_up(self.cover_path).replace('http:', '')
             ret = bili.submit(self.submit_api)  # 提交视频
@@ -71,16 +79,13 @@ class BiliBili:
         self.app_key = None
         self.appsec = None
         if self.app_key is None or self.appsec is None:
-            # self.app_key = 'aae92bc66f3edfab'
             self.app_key = 'ae57252b0c09105d'
-            # self.appsec = 'af125a0d5279fd576c1b4418a3e8276d'
             self.appsec = 'c75875c596a69eb55bd119e74b07cfe3'
         self.__session = requests.Session()
         self.video = video
         self.__session.mount('https://', HTTPAdapter(max_retries=Retry(total=5, method_whitelist=False)))
         self.__session.headers.update({
-            # "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/63.0.3239.108",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.54 Safari/537.36 Edg/95.0.1020.30",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/63.0.3239.108",
             "Referer": "https://www.bilibili.com/", 'Connection': 'keep-alive'
         })
         self.cookies = None
@@ -91,16 +96,60 @@ class BiliBili:
         self._auto_os = None
         self.persistence_path = 'engine/bili.cookie'
 
+    def check_tag(self, tag):
+        r = self.__session.get("https://member.bilibili.com/x/vupre/web/topic/tag/check?tag=" + tag).json()
+        if r["code"] == 0:
+            return True
+        else:
+            return False
+
+    def get_qrcode(self):
+        params = {
+            "appkey": "4409e2ce8ffd12b8",
+            "local_id": "0",
+            "ts": int(time.time()),
+        }
+        params["sign"] = hashlib.md5(
+            f"{urllib.parse.urlencode(params)}59b43e04ad6965f34319062b478f83dd".encode()).hexdigest()
+        response = self.__session.post("http://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code", data=params,
+                                       timeout=5)
+        r = response.json()
+        if r and r["code"] == 0:
+            return r
+
+    async def login_by_qrcode(self, value):
+        params = {
+            "appkey": "4409e2ce8ffd12b8",
+            "auth_code": value["data"]["auth_code"],
+            "local_id": "0",
+            "ts": int(time.time()),
+        }
+        params["sign"] = hashlib.md5(
+            f"{urllib.parse.urlencode(params)}59b43e04ad6965f34319062b478f83dd".encode()).hexdigest()
+        for i in range(0, 120):
+            await asyncio.sleep(1)
+            response = self.__session.post("http://passport.bilibili.com/x/passport-tv-login/qrcode/poll", data=params,
+                                           timeout=5)
+            r = response.json()
+            if r and r["code"] == 0:
+                return r
+        raise "Qrcode timeout"
+
+    def tid_archive(self, cookies):
+        requests.utils.add_dict_to_cookiejar(self.__session.cookies, cookies)
+        response = self.__session.get("https://member.bilibili.com/x/vupre/web/archive/pre")
+        return response.json()
+
     def login(self, persistence_path, user):
         self.persistence_path = persistence_path
         if os.path.isfile(persistence_path):
             print('使用持久化内容上传')
             self.load()
-        if not self.cookies and user.get('cookies'):
+        if user.get('cookies'):
             self.cookies = user['cookies']
-        if not self.access_token and user.get('access_token'):
+        if user.get('access_token'):
             self.access_token = user['access_token']
-        if not self.account and user.get('account'):
+        if user.get('account'):
             self.account = user['account']
         if self.cookies:
             try:
@@ -126,6 +175,35 @@ class BiliBili:
                        'access_token': self.access_token,
                        'refresh_token': self.refresh_token
                        }, f)
+
+    def send_sms(self, phone_number, country_code):
+        params = {
+            "actionKey": "appkey",
+            "appkey": "783bbb7264451d82",
+            "build": 6510400,
+            "channel": "bili",
+            "cid": country_code,
+            "device": "phone",
+            "mobi_app": "android",
+            "platform": "android",
+            "tel": phone_number,
+            "ts": int(time.time()),
+        }
+        sign = hashlib.md5(f"{urllib.parse.urlencode(params)}2653583c8873dea268ab9386918b1d65".encode()).hexdigest()
+        payload = f"{urllib.parse.urlencode(params)}&sign={sign}"
+        response = self.__session.post("https://passport.bilibili.com/x/passport-login/sms/send", data=payload,
+                                       timeout=5)
+        return response.json()
+
+    def login_by_sms(self, code, params):
+        params["code"] = code
+        params["sign"] = hashlib.md5(
+            f"{urllib.parse.urlencode(params)}59b43e04ad6965f34319062b478f83dd".encode()).hexdigest()
+        response = self.__session.post("https://passport.bilibili.com/x/passport-login/login/sms", data=params,
+                                       timeout=5)
+        r = response.json()
+        if r and r["code"] == 0:
+            return r
 
     def login_by_password(self, username, password):
         print('使用账号上传')
@@ -171,7 +249,6 @@ class BiliBili:
         requests.utils.add_dict_to_cookiejar(self.__session.cookies, cookie)
         if 'bili_jct' in cookie:
             self.__bili_jct = cookie["bili_jct"]
-
         data = self.__session.get("https://api.bilibili.com/x/web-interface/nav", timeout=5).json()
         if data["code"] != 0:
             raise Exception(data)
@@ -222,35 +299,43 @@ class BiliBili:
         "probe_url":"??"}
         """
         if not self._auto_os:
-            self._auto_os = self.probe()
             if lines == 'kodo':
                 self._auto_os = {"os": "kodo", "query": "bucket=bvcupcdnkodobm&probe_version=20200810",
                                  "probe_url": "//up-na0.qbox.me/crossdomain.xml"}
-            if lines == 'bda2':
+            elif lines == 'bda2':
                 self._auto_os = {"os": "upos", "query": "upcdn=bda2&probe_version=20200810",
                                  "probe_url": "//upos-sz-upcdnbda2.bilivideo.com/OK"}
-            if lines == 'ws':
+            elif lines == 'ws':
                 self._auto_os = {"os": "upos", "query": "upcdn=ws&probe_version=20200810",
                                  "probe_url": "//upos-sz-upcdnws.bilivideo.com/OK"}
-            if lines == 'qn':
+            elif lines == 'qn':
                 self._auto_os = {"os": "upos", "query": "upcdn=qn&probe_version=20200810",
                                  "probe_url": "//upos-sz-upcdnqn.bilivideo.com/OK"}
+            elif lines == 'cos':
+                self._auto_os = {"os": "cos", "query": "",
+                                 "probe_url": ""}
+            elif lines == 'cos-internal':
+                self._auto_os = {"os": "cos-internal", "query": "",
+                                 "probe_url": ""}
+            else:
+                self._auto_os = self.probe()
             logger.info(f"线路选择 => {self._auto_os['os']}: {self._auto_os['query']}. time: {self._auto_os.get('cost')}")
         if self._auto_os['os'] == 'upos':
             upload = self.upos
+        elif self._auto_os['os'] == 'cos':
+            upload = self.cos
+        elif self._auto_os['os'] == 'cos-internal':
+            upload = lambda *args, **kwargs: self.cos(*args, **kwargs, internal=True)
         elif self._auto_os['os'] == 'kodo':
             upload = self.kodo
-        elif self._auto_os['os'] == "gcs":
-            raise NotImplementedError('gcs')
-        elif self._auto_os['os'] == "bos":
-            raise NotImplementedError('bos')
         else:
             logger.error(f"NoSearch:{self._auto_os['os']}")
             raise NotImplementedError(self._auto_os['os'])
+        logger.info(f"os: {self._auto_os['os']}")
         total_size = os.path.getsize(filepath)
         with open(filepath, 'rb') as f:
             query = {
-                'r': self._auto_os['os'],
+                'r': self._auto_os['os'] if self._auto_os['os'] != 'cos-internal' else 'cos',
                 'profile': 'ugcupos/bup' if 'upos' == self._auto_os['os'] else "ugcupos/bupfetch",
                 'ssl': 0,
                 'version': '2.8.12',
@@ -262,6 +347,80 @@ class BiliBili:
                 f"https://member.bilibili.com/preupload?{self._auto_os['query']}", params=query,
                 timeout=5)
             return asyncio.run(upload(f, total_size, ret.json(), tasks=tasks))
+
+    async def cos(self, file, total_size, ret, chunk_size=10485760, tasks=3, internal=False):
+        filename = file.name
+        url = ret["url"]
+        if internal:
+            url = url.replace("cos.accelerate", "cos-internal.ap-shanghai")
+        biz_id = ret["biz_id"]
+        post_headers = {
+            "Authorization": ret["post_auth"],
+        }
+        put_headers = {
+            "Authorization": ret["put_auth"],
+        }
+
+        initiate_multipart_upload_result = ET.fromstring(self.__session.post(f'{url}?uploads&output=json', timeout=5,
+                                                                             headers=post_headers).content)
+        upload_id = initiate_multipart_upload_result.find('UploadId').text
+        # 开始上传
+        parts = []  # 分块信息
+        chunks = math.ceil(total_size / chunk_size)  # 获取分块数量
+
+        async def upload_chunk(session, chunks_data, params):
+            async with session.put(url, params=params, raise_for_status=True,
+                                   data=chunks_data, headers=put_headers) as r:
+                end = time.perf_counter() - start
+                parts.append({"Part": {"PartNumber": params['chunk'] + 1, "ETag": r.headers['Etag']}})
+                sys.stdout.write(f"\r{params['end'] / 1000 / 1000 / end:.2f}MB/s "
+                                 f"=> {params['partNumber'] / chunks:.1%}")
+
+        start = time.perf_counter()
+        await self._upload({
+            'uploadId': upload_id,
+            'chunks': chunks,
+            'total': total_size
+        }, file, chunk_size, upload_chunk, tasks=tasks)
+        cost = time.perf_counter() - start
+        fetch_headers = {
+            "X-Upos-Fetch-Source": ret["fetch_headers"]["X-Upos-Fetch-Source"],
+            "X-Upos-Auth": ret["fetch_headers"]["X-Upos-Auth"],
+            "Fetch-Header-Authorization": ret["fetch_headers"]["Fetch-Header-Authorization"]
+        }
+        parts = sorted(parts, key=lambda x: x['Part']['PartNumber'])
+        complete_multipart_upload = ET.Element('CompleteMultipartUpload')
+        for part in parts:
+            part_et = ET.SubElement(complete_multipart_upload, 'Part')
+            part_number = ET.SubElement(part_et, 'PartNumber')
+            part_number.text = str(part['Part']['PartNumber'])
+            e_tag = ET.SubElement(part_et, 'ETag')
+            e_tag.text = part['Part']['ETag']
+        xml = ET.tostring(complete_multipart_upload)
+        ii = 0
+        while ii <= 3:
+            try:
+                res = self.__session.post(url, params={'uploadId': upload_id}, data=xml, headers=post_headers,
+                                          timeout=15)
+                if res.status_code == 200:
+                    break
+                raise IOError(res.text)
+            except IOError:
+                ii += 1
+                logger.info("请求合并分片出现问题，尝试重连，次数：" + str(ii))
+                time.sleep(15)
+        ii = 0
+        while ii <= 3:
+            try:
+                res = self.__session.post("https:" + ret["fetch_url"], headers=fetch_headers, timeout=15).json()
+                if res.get('OK') == 1:
+                    logger.info(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s. {res}')
+                    return {"title": splitext(filename)[0], "filename": ret["bili_filename"], "desc": ""}
+                raise IOError(res)
+            except IOError:
+                ii += 1
+                logger.info("上传出现问题，尝试重连，次数：" + str(ii))
+                time.sleep(15)
 
     async def kodo(self, file, total_size, ret, chunk_size=4194304, tasks=3):
         filename = file.name
@@ -292,9 +451,7 @@ class BiliBili:
         await self._upload({}, file, chunk_size, upload_chunk, tasks=tasks)
         cost = time.perf_counter() - start
 
-        # logger.info(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s')
-        print(f'{filename} uploaded')
-        print(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s')
+        logger.info(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s')
         parts.sort(key=lambda x: x['index'])
         self.__session.post(f"{endpoint}/mkfile/{total_size}/key/{base64.urlsafe_b64encode(key.encode()).decode()}",
                             data=','.join(map(lambda x: x['ctx'], parts)), headers=headers, timeout=10)
@@ -336,7 +493,6 @@ class BiliBili:
             'total': total_size
         }, file, chunk_size, upload_chunk, tasks=tasks)
         cost = time.perf_counter() - start
-        # mark分p标题
         p = {
             'name': filename,
             'uploadId': upload_id,
@@ -344,11 +500,18 @@ class BiliBili:
             'output': 'json',
             'profile': 'ugcupos/bup'
         }
-        r = self.__session.post(url, params=p, json={"parts": parts}, headers=headers, timeout=15).json()
-        logger.info(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s. {r}')
-        if r.get('OK') != 1:
-            raise Exception(r)
-        return {"title": splitext(filename)[0], "filename": splitext(basename(upos_uri))[0], "desc": ""}
+        ii = 0
+        while ii <= 3:
+            try:
+                r = self.__session.post(url, params=p, json={"parts": parts}, headers=headers, timeout=15).json()
+                if r.get('OK') == 1:
+                    logger.info(f'{filename} uploaded >> {total_size / 1000 / 1000 / cost:.2f}MB/s. {r}')
+                    return {"title": splitext(filename)[0], "filename": splitext(basename(upos_uri))[0], "desc": ""}
+                raise IOError(r)
+            except IOError:
+                ii += 1
+                logger.info("上传出现问题，尝试重连，次数：" + str(ii))
+                time.sleep(15)
 
     @staticmethod
     async def _upload(params, file, chunk_size, afunc, tasks=3):
@@ -500,7 +663,6 @@ class Data:
     desc_format_id: int = 0
     desc: str = ''
     dynamic: str = ''
-    # mark3 标题
     subtitle: dict = field(init=False)
     tag: Union[list, str] = ''
     videos: list = field(default_factory=list)
@@ -516,17 +678,15 @@ class Data:
         if self.dtime and self.dtime - int(time.time()) <= 14400:
             self.dtime = None
         if isinstance(self.tag, list):
-            self.dynamic = f"#{'##'.join(self.tag)}#"
             self.tag = ','.join(self.tag)
 
     def delay_time(self, dtime: int):
-        """设置延时发布时间，距离提交大于4小时，格式为10位时间戳"""
-        if dtime - int(time.time()) > 14400:
+        """设置延时发布时间，距离提交大于2小时，格式为10位时间戳"""
+        if dtime - int(time.time()) > 7200:
             self.dtime = dtime
 
     def set_tag(self, tag: list):
         """设置标签，tag为数组"""
-        # self.dynamic = f"#{'##'.join(tag)}#"
         self.tag = ','.join(tag)
 
     def append(self, video):

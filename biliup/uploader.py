@@ -1,13 +1,13 @@
 import inspect
 import logging
-
-from biliup import engine
+from biliup.config import config
+from biliup import common
 from .engine.decorators import Plugin
 
 logger = logging.getLogger('biliup')
 
 
-def upload(platform, index, data):
+def upload(data):
     """
     上传入口
     :param platform:
@@ -16,17 +16,38 @@ def upload(platform, index, data):
     :return:
     """
     try:
-        cls = Plugin.upload_plugins[platform]
+        index = data['name']
+        context = {**config, **config['streamers'][index]}
+        # platform = context.get("uploader") if context.get("uploader") else "bili_web"
+        platform = context.get("uploader") if context.get("uploader") else "biliup-rs"
+        if context.get('user_cookie'):
+            platform = 'biliup-rs'
+        cls = Plugin.upload_plugins.get(platform)
+        if cls is None:
+            return logger.error(f"No such uploader: {platform}")
+
+        date = data.get("date") if data.get("date") else common.time.now()
+        room_title = data.get('title') if data.get('title') else index
+        if context.get('title'):
+            data["format_title"] = custom_fmtstr(context.get('title'), date, room_title)
+        else:
+            data["format_title"] = f"{common.time.format_time(date)}{index}"
+        if context.get('description'):
+            context['description'] = custom_fmtstr(context.get('description'), date, room_title)
+        threshold = config.get('filtering_threshold')
+        if threshold:
+            data['threshold'] = threshold
+
         sig = inspect.signature(cls)
-        context = {**engine.config, **engine.config['streamers'][index]}
         kwargs = {}
         for k in sig.parameters:
             v = context.get(k)
             if v:
                 kwargs[k] = v
-        date = data.get("date") if data.get("date") else ""
-        if data.get("format_title") is None:
-            data["format_title"] = f"{date}{index}"
         return cls(index, data, **kwargs).start()
     except:
         logger.exception("Uncaught exception:")
+
+
+def custom_fmtstr(string, time, title):
+    return common.time.format_time(time, string).format(title=title)

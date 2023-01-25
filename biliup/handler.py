@@ -1,11 +1,10 @@
 import logging
 
 from . import plugins
-from . import common
-from .engine import config, invert_dict, Plugin
-from .engine.event import Event, EventManager
 from .downloader import download, check_url
-from .engine.upload import UploadBase
+from .engine import invert_dict, Plugin
+from biliup.config import config
+from .engine.event import Event, EventManager
 from .uploader import upload
 
 CHECK = 'check'
@@ -36,28 +35,30 @@ def create_event_manager():
 event_manager = create_event_manager()
 
 
-@event_manager.register(DOWNLOAD, block=True)
+@event_manager.register(DOWNLOAD, block='Asynchronous1')
 def process(name, url):
-    date = common.time_now(config['streamers'][name].get('title'))
+    stream_info = {
+        'name': name,
+        'url': url,
+    }
     try:
-        kwargs = config['streamers'][name].copy()
+        kwargs = {'downloader': config.get('downloader') if config.get('downloader') else 'stream-gears'}
+        kwargs.update(config['streamers'][name].copy())
         kwargs.pop('url')
         suffix = kwargs.get('format')
         if suffix:
             kwargs['suffix'] = suffix
-        download(name, url, **kwargs)
+        stream_info = download(name, url, **kwargs)
     finally:
-        return Event(UPLOAD, (name, url, date))
+        return Event(UPLOAD, (stream_info,))
 
 
-@event_manager.register(UPLOAD, block=True)
-def process_upload(name, url, date):
+@event_manager.register(UPLOAD, block='Asynchronous2')
+def process_upload(stream_info):
+    url = stream_info['url']
     yield Event(BE_MODIFIED, (url, 2))
     try:
-        data = {"url": url, "date": date}
-        if config['streamers'][name].get('title'):
-            data["format_title"] = date
-        upload("bili_web", name, data)
+        upload(stream_info)
     finally:
         yield Event(BE_MODIFIED, args=(url, 0))
 
@@ -72,7 +73,7 @@ class KernelFunc:
         self.inverted_index = inverted_index
         self.streamer_url = streamer_url
 
-    @event_manager.register(CHECK, block=True)
+    @event_manager.register(CHECK, block='Asynchronous1')
     def singleton_check(self, platform):
         plugin = self.checker[platform]
         wait = config.get('checker_sleep') if config.get('checker_sleep') else 15
@@ -95,8 +96,11 @@ class KernelFunc:
     @event_manager.register(CHECK_UPLOAD)
     def free_upload(self):
         for title, urls in self.streamer_url.items():
-            if self.free(urls) and UploadBase.filter_file(title):
-                yield Event(UPLOAD, args=(title, urls[0], common.time_now(config['streamers'][title].get('title'))))
+            if self.free(urls):
+                yield Event(UPLOAD, args=({
+                    'name': title,
+                    'url': urls[0],
+                },))
 
     @event_manager.register(BE_MODIFIED)
     def revise(self, url, status):
@@ -108,3 +112,6 @@ class KernelFunc:
     def free(self, list_url):
         status_num = list(map(lambda x: self.url_status.get(x), list_url))
         return not (1 in status_num or 2 in status_num)
+
+    def get_url_status(self):
+        return self.url_status
