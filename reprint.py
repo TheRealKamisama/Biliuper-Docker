@@ -9,7 +9,7 @@ def print(*arg):
     now_time = time.strftime('%H:%M:%S',time.localtime(time.time()))
     rewrite_print(*arg) 
     # rewrite_print(day_time+' '+now_time,*arg)  
-    output_dir = ".\\logs\\"
+    output_dir = "./logs/"
     if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             # print('新建log文件夹')

@@ -32,8 +32,8 @@ def make_timelist():
 
 def main():
     time_list = make_timelist()
-    json_path = ".\setting.json"
-    log_path = '.\\logs\\'
+    json_path = "./setting.json"
+    log_path = './logs/'
     video_path = dojson.get_set()['video_path']
     backup_path=dojson.get_set()['backup_path']
     delete_time = dojson.get_set()['delete_time'] #单位：小时
