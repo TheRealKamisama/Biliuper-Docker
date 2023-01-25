@@ -1,0 +1,13 @@
+aiohttp==3.8.3
+importlib_resources==5.10.2
+Pillow==9.4.0
+PyYAML==6.0
+requests==2.28.1
+rsa==4.9
+selenium==4.8.0
+stream_gears==0.1.13
+streamlink==5.2.1
+tomli==2.0.1
+tomli_w==1.0.0
+ykdl==1.8.1.post1
+yt_dlp==2023.1.6
