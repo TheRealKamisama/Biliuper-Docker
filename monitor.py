@@ -81,7 +81,7 @@ def main(vup_name):
                         run_upload(vup_name)
                     except Exception as e:
                         print(traceback.format_exc())  
-                        traceback.print_exc(file=open('./日志/错误日志.log','a',encoding='utf-8'))
+                        traceback.print_exc(file=open('./logs/错误日志.log','a',encoding='utf-8'))
                     print(f'{vup_name}上传结束')
                 elif is_euqal and do_upload is not True:
                     print(f'{vup_name}录制中，不启动上传')
@@ -94,7 +94,7 @@ def main(vup_name):
                         run_remove(vup_name)
                     except Exception as e:
                         print(traceback.format_exc())  
-                        traceback.print_exc(file=open('./日志/错误日志.log','a',encoding='utf-8'))
+                        traceback.print_exc(file=open('./logs/错误日志.log','a',encoding='utf-8'))
                 else:
                     print(f'{vup_name}未开启转存选项,不启动转存')
             else:

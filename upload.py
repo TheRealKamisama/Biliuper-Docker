@@ -26,7 +26,7 @@ def do_text(filename):
     return text,time_name
 
 def do_data(time):
-    year = time[0:4] #前包后不包
+    year = time[0:4] #前闭后开
     month = time[4:6]
     day = time[6:8]
     # time_name = year+'年'+month+'月'+day+'日'
